@@ -415,24 +415,27 @@ app.post(['/stt', '/api/stt'], async (req, res) => {
     const { audioUrl, language = 'zh-CN' } = req.body;
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
 
-    if (!audioUrl || typeof audioUrl !== 'string') {
-      return res.status(400).json({ error: 'audioUrl is required' });
+    if (!audioUrl || typeof audioUrl !== 'string' || !audioUrl.includes(';base64,')) {
+      return res.status(400).json({ error: 'Valid base64 audioUrl is required' });
     }
 
-    const match = audioUrl.match(/^data:(audio\/[a-zA-Z0-9-+.]+);base64,(.+)$/);
-    if (!match) {
-      return res.status(400).json({ error: 'Invalid audio Data URI format' });
+    const parts = audioUrl.split(';base64,');
+    const rawMime = parts[0].replace(/^data:/, '');
+    const base64Data = parts[1];
+
+    if (!base64Data) {
+      return res.status(400).json({ error: 'Empty base64 audio payload' });
     }
 
-    const rawMime = match[1];
-    const base64Data = match[2];
     const mimeType = rawMime.includes('webm')
       ? 'audio/webm'
-      : rawMime.includes('mp4')
+      : rawMime.includes('mp4') || rawMime.includes('aac') || rawMime.includes('m4a')
       ? 'audio/mp4'
       : rawMime.includes('ogg')
       ? 'audio/ogg'
-      : 'audio/wav';
+      : rawMime.includes('wav')
+      ? 'audio/wav'
+      : 'audio/mp4';
 
     const targetLangName = language.startsWith('zh') ? 'Chinese (Mandarin)' : 'Vietnamese';
     const prompt = `Listen to this speech recording. Transcribe the exact spoken words in ${targetLangName}. Return JSON matching schema:
