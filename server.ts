@@ -3,7 +3,6 @@ import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type, Modality } from '@google/genai';
-import { createServer as createViteServer } from 'vite';
 
 dotenv.config();
 
@@ -11,6 +10,17 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
+
+// Enable CORS for Vercel deployment
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-gemini-api-key');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Initialize Gemini Client server-side
 const geminiApiKey = process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY' && !process.env.GEMINI_API_KEY.startsWith('MY_') 
@@ -573,7 +583,44 @@ Your task:
     return res.json(newSession);
   } catch (error: any) {
     console.error('Error starting conversation:', error);
-    return res.status(500).json({ error: error?.message || 'Failed to create conversation session' });
+    const sessionId = `session_${Date.now()}`;
+    const level = req.body?.level || 'HSK 1';
+    const topic = req.body?.topic || 'Self Introduction';
+
+    const topicDefaults: Record<string, { chineseText: string; pinyin: string; vietnameseTranslation: string }> = {
+      'Self Introduction': { chineseText: '你好！请问你叫什么名字？', pinyin: 'Nǐ hǎo! Qǐngwèn nǐ jiào shénme míngzi?', vietnameseTranslation: 'Xin chào! Cho hỏi bạn tên là gì?' },
+      'Ordering Food': { chineseText: '你好！欢迎光临，你想吃什么？', pinyin: 'Nǐ hǎo! Huānyíng guānglín, nǐ xiǎng chī shénme?', vietnameseTranslation: 'Xin chào! Chào mừng quý khách, bạn muốn ăn gì?' },
+      'Shopping': { chineseText: '你好！你想买什么衣服？', pinyin: 'Nǐ hǎo! Nǐ xiǎng mǎi shénme yīfu?', vietnameseTranslation: 'Xin chào! Bạn muốn mua quần áo gì?' },
+      'Travel': { chineseText: '你去过中国旅游吗？', pinyin: 'Nǐ qù guo Zhōngguó lǚyóu ma?', vietnameseTranslation: 'Bạn đã từng đi du lịch Trung Quốc chưa?' },
+    };
+
+    const fallbackChoice = topicDefaults[topic] || {
+      chineseText: `你好！我们 today 聊聊"${topic}"吧！`,
+      pinyin: `Nǐ hǎo! Wǒmen jīntiān liáo liao "${topic}" ba!`,
+      vietnameseTranslation: `Xin chào! Hôm nay chúng ta hãy trò chuyện về chủ đề "${topic}" nhé!`,
+    };
+
+    const firstMsg: ServerMessage = {
+      id: `msg_${Date.now()}`,
+      sessionId,
+      role: 'assistant',
+      content: fallbackChoice.chineseText,
+      pinyin: fallbackChoice.pinyin,
+      translation: fallbackChoice.vietnameseTranslation,
+      createdAt: new Date().toISOString(),
+    };
+
+    const newSession: ServerSession = {
+      id: sessionId,
+      level,
+      topic,
+      messages: [firstMsg],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    sessionsStore.set(sessionId, newSession);
+    return res.json(newSession);
   }
 });
 
@@ -766,6 +813,7 @@ app.post('/api/pronunciation', async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
