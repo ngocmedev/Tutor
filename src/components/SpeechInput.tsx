@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Send, Loader2, Globe, AlertCircle } from 'lucide-react';
+import { TextToSpeechService } from '../services/textToSpeech';
 
 interface SpeechInputProps {
   onSendMessage: (text: string, recordedAudioUrl?: string) => void;
@@ -17,6 +18,34 @@ declare global {
   }
 }
 
+// Mobile-compatible MIME type detector for MediaRecorder
+const getSupportedMimeType = (): string => {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/aac',
+    'audio/ogg',
+    'audio/wav',
+  ];
+  for (const t of types) {
+    try {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    } catch (_) {}
+  }
+  return '';
+};
+
+// Check MediaDevices support (handles HTTP insecure context on mobile)
+const isMediaDevicesSupported = (): boolean => {
+  return (
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices &&
+    !!navigator.mediaDevices.getUserMedia
+  );
+};
+
 export const SpeechInput: React.FC<SpeechInputProps> = ({
   onSendMessage,
   placeholder = 'Nói hoặc nhập tiếng Trung/Tiếng Việt...',
@@ -31,33 +60,61 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
   );
   const [speechSupported, setSpeechSupported] = useState(true);
   const [micError, setMicError] = useState<string | null>(null);
+
   const recognitionRef = useRef<any>(null);
   const shouldKeepListeningRef = useRef(false);
   const baseTextRef = useRef('');
 
-  // Real Microphone MediaRecorder state
+  // Mobile Microphone MediaRecorder state
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
   const recordedAudioUrlRef = useRef<string | undefined>(undefined);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  const startMediaRecording = async () => {
+  const startMediaRecording = async (): Promise<boolean> => {
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isMediaDevicesSupported()) {
+        setMicError(
+          'Không thể truy cập Micro. Trên điện thoại, trình duyệt yêu cầu truy cập qua kết nối HTTPS (hoặc localhost/Vercel) để cấp quyền Micro.'
+        );
+        return false;
+      }
+
+      TextToSpeechService.stop(); // Stop any playing AI voice before opening mic
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (err) {
+        // Fallback for mobile devices rejecting complex audio constraints
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       mediaStreamRef.current = stream;
       mediaChunksRef.current = [];
 
-      const mediaRecorder = new MediaRecorder(stream);
+      const mimeType = getSupportedMimeType();
+      const options = mimeType ? { mimeType } : undefined;
+      const mediaRecorder = options
+        ? new MediaRecorder(stream, options)
+        : new MediaRecorder(stream);
+
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
+        if (e.data && e.data.size > 0) {
           mediaChunksRef.current.push(e.data);
         }
       };
 
       mediaRecorder.onstop = () => {
         if (mediaChunksRef.current.length > 0) {
-          const blob = new Blob(mediaChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
+          const type = mediaRecorder.mimeType || mimeType || 'audio/webm';
+          const blob = new Blob(mediaChunksRef.current, { type });
           const reader = new FileReader();
           reader.onloadend = () => {
             recordedAudioUrlRef.current = reader.result as string;
@@ -70,10 +127,19 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(250); // 250ms timeslice for mobile stream safety
       mediaRecorderRef.current = mediaRecorder;
-    } catch (e) {
+      return true;
+    } catch (e: any) {
       console.warn('MediaRecorder error:', e);
+      if (e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError') {
+        setMicError('Quyền truy cập Micro bị từ chối. Vui lòng mở Cài đặt trình duyệt và cấp quyền Microphone.');
+      } else if (e?.name === 'NotFoundError') {
+        setMicError('Không tìm thấy thiết bị Microphone trên máy.');
+      } else {
+        setMicError(`Lỗi truy cập Micro: ${e?.message || 'Không thể khởi động Micro'}`);
+      }
+      return false;
     }
   };
 
@@ -93,15 +159,15 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
-      // 500ms safety timeout so sending message never hangs
       const timeout = setTimeout(() => {
         safeResolve(recordedAudioUrlRef.current);
-      }, 500);
+      }, 600);
 
       mediaRecorder.onstop = () => {
         clearTimeout(timeout);
         if (mediaChunksRef.current.length > 0) {
-          const blob = new Blob(mediaChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
+          const type = mediaRecorder.mimeType || getSupportedMimeType() || 'audio/webm';
+          const blob = new Blob(mediaChunksRef.current, { type });
           const reader = new FileReader();
           reader.onloadend = () => {
             const dataUrl = reader.result as string;
@@ -136,9 +202,15 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
       return;
     }
 
+    setSpeechSupported(true);
+
     try {
       const recognition = new SpeechRecognition();
-      recognition.continuous = true; // Keep microphone active continuously across pauses
+      const isMobile = typeof navigator !== 'undefined' &&
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+      // On mobile browsers, continuous mode frequently causes speech engine crashes
+      recognition.continuous = !isMobile;
       recognition.interimResults = true;
       recognition.lang = speechLang;
 
@@ -170,39 +242,23 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
       };
 
       recognition.onerror = (event: any) => {
-        console.warn('Speech recognition error:', event.error);
+        console.warn('Speech recognition warning:', event.error);
         if (event.error === 'not-allowed') {
-          shouldKeepListeningRef.current = false;
-          setIsListening(false);
           setMicError('Quyền truy cập Micro bị từ chối. Vui lòng cấp quyền Microphone trong trình duyệt.');
-        } else if (event.error === 'network') {
-          shouldKeepListeningRef.current = false;
-          setIsListening(false);
-          setMicError('Lỗi kết nối mạng dịch vụ giọng nói. Kiểm tra lại kết nối mạng.');
-        } else if (event.error !== 'aborted' && event.error !== 'no-speech') {
-          setMicError(`Lỗi nhận diện giọng nói: ${event.error}`);
         }
       };
 
       recognition.onend = () => {
-        // Auto-restart if user hasn't explicitly stopped or submitted
-        if (shouldKeepListeningRef.current) {
+        if (shouldKeepListeningRef.current && isMobile) {
           try {
             recognition.start();
-          } catch (e) {
-            setIsListening(false);
-            shouldKeepListeningRef.current = false;
-          }
-        } else {
-          setIsListening(false);
+          } catch (_) {}
         }
       };
 
       recognitionRef.current = recognition;
 
       return () => {
-        shouldKeepListeningRef.current = false;
-        stopMediaRecording();
         try {
           recognition.abort();
         } catch (_) {}
@@ -213,33 +269,40 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     }
   }, [speechLang]);
 
-  const toggleListening = () => {
+  const toggleListening = async () => {
     setMicError(null);
-    if (!recognitionRef.current) return;
 
+    // If currently listening, stop recording
     if (isListening || shouldKeepListeningRef.current) {
       shouldKeepListeningRef.current = false;
-      stopMediaRecording();
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        console.warn('Speech stop error:', e);
-      }
       setIsListening(false);
-    } else {
-      shouldKeepListeningRef.current = true;
-      startMediaRecording();
+      stopMediaRecording();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (_) {}
+      }
+      return;
+    }
+
+    // Start recording audio
+    shouldKeepListeningRef.current = true;
+    const success = await startMediaRecording();
+    if (!success) {
+      shouldKeepListeningRef.current = false;
+      setIsListening(false);
+      return;
+    }
+
+    setIsListening(true);
+
+    // Attempt Web Speech API live text transcription if available
+    if (recognitionRef.current) {
       try {
         recognitionRef.current.lang = speechLang;
         recognitionRef.current.start();
       } catch (err: any) {
-        console.warn('Speech start error:', err);
-        if (err?.name === 'InvalidStateError') {
-          setIsListening(true);
-        } else {
-          shouldKeepListeningRef.current = false;
-          setMicError('Không thể khởi động Micro. Vui lòng thử lại.');
-        }
+        console.warn('Speech start info:', err);
       }
     }
   };
@@ -248,23 +311,6 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     const newText = e.target.value;
     setInputText(newText);
     baseTextRef.current = newText;
-
-    if (recognitionRef.current) {
-      const wasListening = isListening || shouldKeepListeningRef.current;
-      try {
-        recognitionRef.current.abort();
-      } catch (_) {}
-
-      if (wasListening) {
-        shouldKeepListeningRef.current = true;
-        setTimeout(() => {
-          try {
-            recognitionRef.current.lang = speechLang;
-            recognitionRef.current.start();
-          } catch (_) {}
-        }, 150);
-      }
-    }
   };
 
   const handleClearText = () => {
@@ -272,24 +318,6 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     baseTextRef.current = '';
     recordedAudioUrlRef.current = undefined;
     setMicError(null);
-
-    if (recognitionRef.current) {
-      const wasListening = isListening || shouldKeepListeningRef.current;
-      try {
-        recognitionRef.current.abort(); // Aborts browser SpeechRecognition to clear internal results buffer
-      } catch (_) {}
-
-      // If mic was active, restart recognition cleanly with empty buffer
-      if (wasListening) {
-        shouldKeepListeningRef.current = true;
-        setTimeout(() => {
-          try {
-            recognitionRef.current.lang = speechLang;
-            recognitionRef.current.start();
-          } catch (_) {}
-        }, 150);
-      }
-    }
   };
 
   const handleLangChange = (newLang: 'zh-CN' | 'vi-VN') => {
@@ -308,23 +336,29 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!inputText.trim() || disabled) return;
-
-    const messageToSend = inputText.trim();
 
     shouldKeepListeningRef.current = false;
+    setIsListening(false);
     const audioUrlToSend = await stopMediaRecording();
-
-    setInputText('');
-    baseTextRef.current = '';
-    setMicError(null);
 
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
       } catch (_) {}
-      setIsListening(false);
     }
+
+    let messageToSend = inputText.trim();
+
+    // If user recorded audio without typed text (e.g. spoken voice on mobile)
+    if (!messageToSend && audioUrlToSend) {
+      messageToSend = speechLang === 'zh-CN' ? '语音消息' : 'Tin nhắn giọng nói';
+    }
+
+    if (!messageToSend || disabled) return;
+
+    setInputText('');
+    baseTextRef.current = '';
+    setMicError(null);
 
     onSendMessage(messageToSend, audioUrlToSend);
     recordedAudioUrlRef.current = undefined;
@@ -332,7 +366,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
   return (
     <div className={`bg-white rounded-xl border border-[#E5E5E1] shadow-xs p-3.5 ${className}`}>
-      {/* Speech Recognition Toolbar */}
+      {/* Speech Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-[#E5E5E1]">
         <div className="flex items-center gap-2">
           <Globe className="w-4 h-4 text-gray-400" />
@@ -368,13 +402,13 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         {isListening && (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-red-600"></span>
-            Đang lắng nghe giọng nói...
+            Đang thu âm giọng nói...
           </span>
         )}
 
         {!speechSupported && (
           <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-            Dùng Chrome/Edge để bật tính năng Micro
+            Dùng thu âm trực tiếp (MediaRecorder)
           </span>
         )}
       </div>
@@ -383,7 +417,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
       {micError && (
         <div className="mb-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center gap-1.5">
           <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
-          <span>{micError}</span>
+          <span className="flex-1">{micError}</span>
           <button
             type="button"
             onClick={() => setMicError(null)}
@@ -426,30 +460,28 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-1.5">
-          {speechSupported && (
-            <button
-              type="button"
-              onClick={toggleListening}
-              disabled={disabled}
-              id="btn-toggle-mic"
-              title={isListening ? 'Tắt Mic' : 'Bật Mic để nói'}
-              className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all cursor-pointer shadow-xs border shrink-0 disabled:opacity-40 ${
-                isListening
-                  ? 'bg-red-600 text-white border-red-600 animate-pulse'
-                  : 'bg-[#F0EFED] text-[#2D2D2D] hover:bg-gray-200 border-[#E5E5E1]'
-              }`}
-            >
-              {isListening ? (
-                <MicOff className="w-5 h-5" />
-              ) : (
-                <Mic className="w-5 h-5 text-red-600" />
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={toggleListening}
+            disabled={disabled}
+            id="btn-toggle-mic"
+            title={isListening ? 'Bấm để dừng thu âm' : 'Bật Mic để nói'}
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all cursor-pointer shadow-xs border shrink-0 disabled:opacity-40 ${
+              isListening
+                ? 'bg-red-600 text-white border-red-600 animate-pulse ring-2 ring-red-400'
+                : 'bg-[#F0EFED] text-[#2D2D2D] hover:bg-gray-200 border-[#E5E5E1]'
+            }`}
+          >
+            {isListening ? (
+              <MicOff className="w-5 h-5" />
+            ) : (
+              <Mic className="w-5 h-5 text-red-600" />
+            )}
+          </button>
 
           <button
             type="submit"
-            disabled={!inputText.trim() || disabled}
+            disabled={(!inputText.trim() && !isListening) || disabled}
             id="btn-send-speech"
             className="w-11 h-11 rounded-xl bg-black hover:bg-gray-800 disabled:opacity-40 text-white flex items-center justify-center transition-all cursor-pointer shadow-xs active:scale-95 border border-black shrink-0"
           >
@@ -464,4 +496,3 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     </div>
   );
 };
-

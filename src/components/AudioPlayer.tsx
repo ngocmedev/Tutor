@@ -68,6 +68,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       return;
     }
 
+    // Stop any existing audio globally before starting new playback
+    TextToSpeechService.stop();
     setErrorMessage(null);
     setIsLoading(true);
 
@@ -81,6 +83,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           setIsLoading(false);
           setIsPlaying(true);
           startTimer();
+          const current = TextToSpeechService.getCurrentAudio();
+          if (current) audioRef.current = current;
         },
         () => {
           setIsPlaying(false);
@@ -99,13 +103,18 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       return;
     }
 
-    // 2. Call TTS service for AI voice
+    // 2. Call TTS service for AI voice (playAudioSource is managed inside TextToSpeechService)
     const response = await TextToSpeechService.speak(
       { text, speed, useChineseVoice: true },
       () => {
         setIsLoading(false);
         setIsPlaying(true);
         startTimer();
+        const current = TextToSpeechService.getCurrentAudio();
+        if (current) {
+          audioRef.current = current;
+          if (current.duration) setDuration(current.duration);
+        }
       },
       () => {
         setIsPlaying(false);
@@ -127,38 +136,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       );
     }
 
-    if (response.audioUrl || response.audioBase64) {
-      const src = response.audioUrl || response.audioBase64;
-      if (src) {
-        if (audioRef.current) {
-          audioRef.current.pause();
-        }
-        const audio = new Audio(src);
-        audioRef.current = audio;
-        audio.playbackRate = speed;
-        audio.onloadedmetadata = () => {
-          setDuration(audio.duration || 3);
+    const currentAudio = TextToSpeechService.getCurrentAudio();
+    if (currentAudio) {
+      audioRef.current = currentAudio;
+      if (currentAudio.duration && !isNaN(currentAudio.duration)) {
+        setDuration(currentAudio.duration);
+      } else {
+        currentAudio.onloadedmetadata = () => {
+          if (currentAudio.duration && !isNaN(currentAudio.duration)) {
+            setDuration(currentAudio.duration);
+          }
         };
-        audio.onended = () => {
-          setIsPlaying(false);
-          setIsLoading(false);
-          stopTimer();
-          setCurrentTime(0);
-        };
-
-        try {
-          await audio.play();
-          setIsPlaying(true);
-          setIsLoading(false);
-          startTimer();
-        } catch (playErr: any) {
-          console.error('Mobile audio play error:', playErr);
-          setIsLoading(false);
-          setIsPlaying(false);
-        }
       }
     } else {
-      // Browser TTS fallback length estimation (~ 0.3s per character)
+      // Browser TTS fallback length estimation (~ 0.35s per character)
       setDuration(Math.max(1, Math.round(text.length * 0.35)));
     }
   };
@@ -166,6 +157,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handleRepeat = () => {
     if (audioRef.current) {
       audioRef.current.currentTime = 0;
+    }
+    const current = TextToSpeechService.getCurrentAudio();
+    if (current) {
+      current.currentTime = 0;
     }
     setCurrentTime(0);
     handlePlayPause();
@@ -176,6 +171,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     if (audioRef.current) {
       audioRef.current.playbackRate = newSpeed;
     }
+    const current = TextToSpeechService.getCurrentAudio();
+    if (current) {
+      current.playbackRate = newSpeed;
+    }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -183,6 +182,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setCurrentTime(val);
     if (audioRef.current) {
       audioRef.current.currentTime = val;
+    }
+    const current = TextToSpeechService.getCurrentAudio();
+    if (current) {
+      current.currentTime = val;
     }
   };
 

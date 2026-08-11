@@ -92,6 +92,13 @@ export class TextToSpeechService {
   }
 
   /**
+   * Returns current active audio element if any
+   */
+  public static getCurrentAudio(): HTMLAudioElement | null {
+    return this.currentAudio;
+  }
+
+  /**
    * Stops any currently playing audio (HTML audio or Web Speech)
    */
   public static stop(): void {
