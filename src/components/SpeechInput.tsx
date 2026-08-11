@@ -144,7 +144,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
           },
         });
       } catch (err) {
-        // Fallback to basic audio constraint for mobile browsers rejecting detailed options
+        // Fallback for mobile browsers rejecting detailed options
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
 
@@ -154,7 +154,6 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
       let mediaRecorder: MediaRecorder;
       const mimeType = getSupportedMimeType();
 
-      // Robust constructor fallback (iOS Safari throws if unsupported mimeType option passed)
       try {
         mediaRecorder = mimeType
           ? new MediaRecorder(stream, { mimeType })
@@ -186,9 +185,8 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
-      // Robust start fallback
       try {
-        mediaRecorder.start(100); // 100ms timeslice for mobile safety
+        mediaRecorder.start(100);
       } catch (_) {
         mediaRecorder.start();
       }
@@ -227,7 +225,6 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
-      // 2500ms safety timeout for mobile FileReader conversion
       const timeout = setTimeout(() => {
         safeResolve(recordedAudioUrlRef.current);
       }, 2500);
@@ -262,7 +259,8 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     });
   };
 
-  useEffect(() => {
+  // Start fresh real-time SpeechRecognition instance when mic turns on
+  const startSpeechRecognition = () => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -274,12 +272,14 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     setSpeechSupported(true);
 
     try {
-      const recognition = new SpeechRecognition();
-      const isMobile =
-        typeof navigator !== 'undefined' &&
-        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch (_) {}
+      }
 
-      recognition.continuous = !isMobile;
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = speechLang;
 
@@ -289,55 +289,54 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
       };
 
       recognition.onresult = (event: any) => {
-        let finalTranscript = '';
-        let interimTranscript = '';
-
+        let liveTranscript = '';
         for (let i = 0; i < event.results.length; i++) {
-          const transcriptChunk = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcriptChunk;
-          } else {
-            interimTranscript += transcriptChunk;
+          if (event.results[i] && event.results[i][0] && event.results[i][0].transcript) {
+            liveTranscript += event.results[i][0].transcript;
           }
         }
 
-        const speechPart = (finalTranscript + ' ' + interimTranscript).trim();
-        const prefix = baseTextRef.current.trim();
-        const fullText = prefix ? (prefix + ' ' + speechPart) : speechPart;
-
-        if (fullText) {
+        const trimmed = liveTranscript.trim();
+        if (trimmed) {
+          const prefix = baseTextRef.current.trim();
+          const fullText = prefix ? `${prefix} ${trimmed}` : trimmed;
           setInputText(fullText);
         }
       };
 
       recognition.onerror = (event: any) => {
-        console.warn('Speech recognition warning:', event.error);
-        // CRITICAL FIX: Do NOT set micError if MediaRecorder stream is active!
+        console.warn('Speech recognition event warning:', event.error);
         if (event.error === 'not-allowed' && !mediaStreamRef.current) {
           setMicError('Vui lòng bật quyền Microphone trong trình duyệt.');
         }
       };
 
       recognition.onend = () => {
-        if (shouldKeepListeningRef.current && isMobile && mediaStreamRef.current) {
+        if (shouldKeepListeningRef.current && mediaStreamRef.current) {
           try {
             recognition.start();
           } catch (_) {}
         }
       };
 
+      recognition.start();
       recognitionRef.current = recognition;
-
-      return () => {
-        try {
-          recognition.abort();
-        } catch (_) {}
-      };
     } catch (e) {
-      console.warn('Failed to initialize Speech Recognition:', e);
-      setSpeechSupported(false);
+      console.warn('Failed to start Speech Recognition:', e);
     }
-  }, [speechLang]);
+  };
+
+  const stopSpeechRecognition = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (_) {}
+      try {
+        recognitionRef.current.abort();
+      } catch (_) {}
+      recognitionRef.current = null;
+    }
+  };
 
   const toggleListening = async () => {
     setMicError(null);
@@ -346,13 +345,10 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     if (isListening || shouldKeepListeningRef.current) {
       shouldKeepListeningRef.current = false;
       setIsListening(false);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (_) {}
-      }
+      stopSpeechRecognition();
 
       const audioUrl = await stopMediaRecording();
+      // If live transcription didn't output text (e.g. mobile Safari), use Gemini AI STT
       if (audioUrl && !inputText.trim()) {
         const transcribedText = await transcribeAudioWithAI(audioUrl);
         if (transcribedText) {
@@ -374,15 +370,8 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
     setIsListening(true);
 
-    // Attempt Web Speech API live text transcription if available
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.lang = speechLang;
-        recognitionRef.current.start();
-      } catch (err: any) {
-        console.warn('Speech start info:', err);
-      }
-    }
+    // Start real-time speech-to-text recognition
+    startSpeechRecognition();
   };
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -400,16 +389,16 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
   const handleLangChange = (newLang: 'zh-CN' | 'vi-VN') => {
     setMicError(null);
-    shouldKeepListeningRef.current = false;
-    baseTextRef.current = '';
-    stopMediaRecording();
-    if (isListening && recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (_) {}
-      setIsListening(false);
-    }
     setSpeechLang(newLang);
+
+    if (isListening) {
+      stopSpeechRecognition();
+      setTimeout(() => {
+        if (shouldKeepListeningRef.current) {
+          startSpeechRecognition();
+        }
+      }, 100);
+    }
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -417,17 +406,12 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
     shouldKeepListeningRef.current = false;
     setIsListening(false);
+    stopSpeechRecognition();
     const audioUrlToSend = await stopMediaRecording();
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (_) {}
-    }
 
     let messageToSend = inputText.trim();
 
-    // If user recorded audio without typed text on mobile
+    // If user recorded audio without live text appearing (e.g. mobile Safari)
     if (!messageToSend && audioUrlToSend) {
       const transcribed = await transcribeAudioWithAI(audioUrlToSend);
       if (transcribed) {
