@@ -408,6 +408,92 @@ app.post('/api/tts', async (req, res) => {
 });
 
 /**
+ * POST /api/stt - Transcribe recorded voice audio to text
+ */
+app.post(['/stt', '/api/stt'], async (req, res) => {
+  try {
+    const { audioUrl, language = 'zh-CN' } = req.body;
+    const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
+
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return res.status(400).json({ error: 'audioUrl is required' });
+    }
+
+    const match = audioUrl.match(/^data:(audio\/[a-zA-Z0-9-+.]+);base64,(.+)$/);
+    if (!match) {
+      return res.status(400).json({ error: 'Invalid audio Data URI format' });
+    }
+
+    const rawMime = match[1];
+    const base64Data = match[2];
+    const mimeType = rawMime.includes('webm')
+      ? 'audio/webm'
+      : rawMime.includes('mp4')
+      ? 'audio/mp4'
+      : rawMime.includes('ogg')
+      ? 'audio/ogg'
+      : 'audio/wav';
+
+    const targetLangName = language.startsWith('zh') ? 'Chinese (Mandarin)' : 'Vietnamese';
+    const prompt = `Listen to this speech recording. Transcribe the exact spoken words in ${targetLangName}. Return JSON matching schema:
+- text: Exact transcribed spoken words in ${targetLangName} (Hanzi if Chinese)
+- pinyin: Accurate Pinyin with tone marks if Chinese, else empty string
+- language: Detected language ('zh' or 'vi')`;
+
+    const effectiveKey = userApiKey && userApiKey.trim().length > 10 ? userApiKey.trim() : geminiApiKey;
+    const client = (userApiKey && userApiKey.trim().length > 10)
+      ? new GoogleGenAI({ apiKey: userApiKey.trim(), httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+      : ai;
+
+    if (effectiveKey) {
+      for (const modelName of CANDIDATE_MODELS) {
+        try {
+          const response = await client.models.generateContent({
+            model: modelName,
+            contents: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
+              },
+              prompt,
+            ],
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  pinyin: { type: Type.STRING },
+                  language: { type: Type.STRING },
+                },
+              },
+            },
+          });
+
+          if (response && response.text) {
+            const parsed = JSON.parse(response.text);
+            return res.json({
+              text: parsed.text || '',
+              pinyin: parsed.pinyin || '',
+              language: parsed.language || 'zh',
+            });
+          }
+        } catch (mErr: any) {
+          console.warn(`STT model ${modelName} warning:`, mErr?.message || mErr);
+        }
+      }
+    }
+
+    return res.json({ text: '', pinyin: '', language: 'zh' });
+  } catch (err: any) {
+    console.error('STT Error:', err);
+    return res.status(500).json({ error: err?.message || 'STT transcription failed' });
+  }
+});
+
+/**
  * POST /api/translate - Chinese & Vietnamese AI Translation & Analysis
  */
 app.post('/api/translate', async (req, res) => {

@@ -55,6 +55,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [speechLang, setSpeechLang] = useState<'zh-CN' | 'vi-VN'>(
     defaultLang === 'zh-CN' ? 'zh-CN' : 'vi-VN'
   );
@@ -70,6 +71,34 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
   const mediaChunksRef = useRef<Blob[]>([]);
   const recordedAudioUrlRef = useRef<string | undefined>(undefined);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  const getApiKeyHeader = (): Record<string, string> => {
+    const customKey = localStorage.getItem('user_gemini_api_key');
+    return customKey && customKey.trim() ? { 'x-gemini-api-key': customKey.trim() } : {};
+  };
+
+  const transcribeAudioWithAI = async (audioDataUrl: string): Promise<string> => {
+    try {
+      setIsTranscribing(true);
+      const res = await fetch('/api/stt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getApiKeyHeader() },
+        body: JSON.stringify({ audioUrl: audioDataUrl, language: speechLang }),
+      });
+
+      if (!res.ok) return '';
+      const data = await res.json();
+      if (data && data.text) {
+        return data.text.trim();
+      }
+      return '';
+    } catch (e) {
+      console.warn('AI STT transcription error:', e);
+      return '';
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
 
   const startMediaRecording = async (): Promise<boolean> => {
     try {
@@ -276,11 +305,19 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     if (isListening || shouldKeepListeningRef.current) {
       shouldKeepListeningRef.current = false;
       setIsListening(false);
-      stopMediaRecording();
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
         } catch (_) {}
+      }
+
+      const audioUrl = await stopMediaRecording();
+      if (audioUrl && !inputText.trim()) {
+        const transcribedText = await transcribeAudioWithAI(audioUrl);
+        if (transcribedText) {
+          setInputText(transcribedText);
+          baseTextRef.current = transcribedText;
+        }
       }
       return;
     }
@@ -351,10 +388,15 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
     // If user recorded audio without typed text (e.g. spoken voice on mobile)
     if (!messageToSend && audioUrlToSend) {
-      messageToSend = speechLang === 'zh-CN' ? '语音消息' : 'Tin nhắn giọng nói';
+      const transcribed = await transcribeAudioWithAI(audioUrlToSend);
+      if (transcribed) {
+        messageToSend = transcribed;
+      } else {
+        messageToSend = speechLang === 'zh-CN' ? '语音消息' : 'Tin nhắn giọng nói';
+      }
     }
 
-    if (!messageToSend || disabled) return;
+    if (!messageToSend || disabled || isTranscribing) return;
 
     setInputText('');
     baseTextRef.current = '';
@@ -406,9 +448,16 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
           </span>
         )}
 
-        {!speechSupported && (
-          <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-            Dùng thu âm trực tiếp (MediaRecorder)
+        {isTranscribing && (
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 animate-pulse">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
+            AI đang nhận diện chữ...
+          </span>
+        )}
+
+        {!speechSupported && !isTranscribing && (
+          <span className="text-[11px] font-medium text-gray-600 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">
+            AI Speech-to-Text Mode
           </span>
         )}
       </div>
@@ -442,12 +491,12 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
             }}
             placeholder={placeholder}
             rows={3}
-            disabled={disabled}
+            disabled={disabled || isTranscribing}
             id="input-speech-text"
             className="w-full bg-[#FAF9F6] border border-[#E5E5E1] rounded-xl px-3.5 py-2.5 text-sm sm:text-xs text-[#2D2D2D] focus:outline-none focus:ring-1 focus:ring-black focus:bg-white resize-y max-h-48 min-h-[70px] overflow-y-auto transition-all placeholder:text-gray-400 disabled:opacity-60 font-sans"
           />
 
-          {inputText && !disabled && (
+          {inputText && !disabled && !isTranscribing && (
             <button
               type="button"
               onClick={handleClearText}
@@ -463,7 +512,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
           <button
             type="button"
             onClick={toggleListening}
-            disabled={disabled}
+            disabled={disabled || isTranscribing}
             id="btn-toggle-mic"
             title={isListening ? 'Bấm để dừng thu âm' : 'Bật Mic để nói'}
             className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all cursor-pointer shadow-xs border shrink-0 disabled:opacity-40 ${
@@ -481,11 +530,11 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
           <button
             type="submit"
-            disabled={(!inputText.trim() && !isListening) || disabled}
+            disabled={(!inputText.trim() && !isListening) || disabled || isTranscribing}
             id="btn-send-speech"
             className="w-11 h-11 rounded-xl bg-black hover:bg-gray-800 disabled:opacity-40 text-white flex items-center justify-center transition-all cursor-pointer shadow-xs active:scale-95 border border-black shrink-0"
           >
-            {disabled ? (
+            {disabled || isTranscribing ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <Send className="w-4 h-4" />

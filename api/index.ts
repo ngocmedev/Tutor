@@ -209,6 +209,84 @@ app.post(['/tts', '/api/tts'], async (req, res) => {
 });
 
 /**
+ * /stt - Transcribe voice audio
+ */
+app.post(['/stt', '/api/stt'], async (req, res) => {
+  try {
+    const { audioUrl, language = 'zh-CN' } = req.body;
+    const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
+
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return res.status(400).json({ error: 'audioUrl is required' });
+    }
+
+    const match = audioUrl.match(/^data:(audio\/[a-zA-Z0-9-+.]+);base64,(.+)$/);
+    if (!match) {
+      return res.status(400).json({ error: 'Invalid audio Data URI format' });
+    }
+
+    const rawMime = match[1];
+    const base64Data = match[2];
+    const mimeType = rawMime.includes('webm')
+      ? 'audio/webm'
+      : rawMime.includes('mp4')
+      ? 'audio/mp4'
+      : rawMime.includes('ogg')
+      ? 'audio/ogg'
+      : 'audio/wav';
+
+    const targetLangName = language.startsWith('zh') ? 'Chinese (Mandarin)' : 'Vietnamese';
+    const prompt = `Listen to this speech recording. Transcribe the exact spoken words in ${targetLangName}. Return JSON with text, pinyin, language.`;
+
+    const aiClient = getGeminiClient(userApiKey);
+    const candidateModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+
+    for (const modelName of candidateModels) {
+      try {
+        const response = await aiClient.models.generateContent({
+          model: modelName,
+          contents: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Data,
+              },
+            },
+            prompt,
+          ],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                text: { type: Type.STRING },
+                pinyin: { type: Type.STRING },
+                language: { type: Type.STRING },
+              },
+            },
+          },
+        });
+
+        if (response && response.text) {
+          const parsed = JSON.parse(response.text);
+          return res.json({
+            text: parsed.text || '',
+            pinyin: parsed.pinyin || '',
+            language: parsed.language || 'zh',
+          });
+        }
+      } catch (err: any) {
+        console.warn(`STT Vercel Model ${modelName} warning:`, err);
+      }
+    }
+
+    return res.json({ text: '', pinyin: '', language: 'zh' });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || 'STT Error' });
+  }
+});
+
+/**
  * /translate
  */
 app.post(['/translate', '/api/translate'], async (req, res) => {
