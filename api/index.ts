@@ -19,7 +19,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Normalize Vercel Serverless Function URL path (/api/conversation -> /conversation or /api/conversation)
+// Normalize Vercel Serverless Function URL path
 app.use((req, res, next) => {
   if (req.url.startsWith('/api/')) {
     req.url = req.url.replace('/api/', '/');
@@ -85,6 +85,32 @@ function getSmartChineseTranslation(text: string): { chineseText: string; pinyin
   };
 }
 
+function getTopicFallbackReply(userMessage: string, topic: string, historyLength: number) {
+  const replies: Record<string, Array<{ chineseText: string; pinyin: string; vietnameseTranslation: string }>> = {
+    'Self Introduction': [
+      { chineseText: '很高兴认识你！你平时有什么兴趣爱好吗？', pinyin: 'Hěn gāoxìng rènshi nǐ! Nǐ píngshí yǒu shénme xìngqù àihào ma?', vietnameseTranslation: 'Rất vui được làm quen với bạn! Bình thường bạn có sở thích gì không?' },
+      { chineseText: '太棒了！你是学生还是已经工作了？', pinyin: 'Tài bàng le! Nǐ shì xuésheng hái shì yǐjīng gōngzuò le?', vietnameseTranslation: 'Tuyệt vời! Bạn là học sinh hay đã đi làm rồi?' },
+      { chineseText: '很好！你学习中文多久了？', pinyin: 'Hěn hǎo! Nǐ xuéxí Zhōngwén duōjiǔ le?', vietnameseTranslation: 'Rất tốt! Bạn đã học tiếng Trung được bao lâu rồi?' },
+    ],
+    'Ordering Food': [
+      { chineseText: '好的！你想吃炒饭还是白饭？', pinyin: 'Hǎo de! Nǐ xiǎng chī chǎofàn hái shì báifàn?', vietnameseTranslation: 'Vâng! Bạn muốn ăn cơm chiên hay cơm trắng?' },
+      { chineseText: '好的，要加辣吗？要喝什么饮料？', pinyin: 'Hǎo de, yào jiā là ma? Yào hē shénme yǐnliào?', vietnameseTranslation: 'Vâng, có cho cay không? Bạn muốn uống nước gì?' },
+      { chineseText: '没问题！请问一共几位用餐？', pinyin: 'Méi wèntí! Qǐngwèn yīgòng jǐ wèi yòngcān?', vietnameseTranslation: 'Không vấn đề! Cho hỏi tổng cộng có mấy vị ạ?' },
+    ],
+    'Shopping': [
+      { chineseText: '好的！请问你想看什么颜色和尺寸？', pinyin: 'Hǎo de! Qǐngwèn nǐ xiǎng kàn shénme yánsè hé chǐcun?', vietnameseTranslation: 'Vâng! Cho hỏi bạn muốn xem màu và size gì?' },
+      { chineseText: '这件衣服现在打折，你要试穿一下吗？', pinyin: 'Zhè jiàn yīfu xiànzài dǎzhé, nǐ yào shì chuān yīxià ma?', vietnameseTranslation: 'Áo này đang giảm giá, bạn có muốn thử không?' },
+    ],
+    'Travel': [
+      { chineseText: '太好了！你最想去中国哪个城市旅游？', pinyin: 'Tài hǎo le! Nǐ zuì xiǎng qù Zhōngguó nǎ gè chéngshì lǚyóu?', vietnameseTranslation: 'Tuyệt quá! Bạn muốn đi du lịch thành phố nào của Trung Quốc nhất?' },
+      { chineseText: '去旅游的时候，你喜欢吃当地美食吗？', pinyin: 'Qù lǚyóu de shíhou, nǐ xǐhuan chī dāngdì měishí ma?', vietnameseTranslation: 'Khi đi du lịch, bạn có thích ăn món ngon địa phương không?' },
+    ],
+  };
+
+  const topicList = replies[topic] || replies['Self Introduction'];
+  return topicList[historyLength % topicList.length];
+}
+
 function sanitizeFeedback(feedbackObj: any) {
   if (!feedbackObj) return feedbackObj;
 
@@ -116,7 +142,7 @@ const sessionsStore = new Map<string, any>();
 
 async function generateContentWithModelFallback(prompt: string, config: any, customApiKey?: string) {
   const aiClient = getGeminiClient(customApiKey);
-  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const candidateModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
   let lastError: any = null;
 
   for (const modelName of candidateModels) {
@@ -362,19 +388,28 @@ app.post('/conversation/message', async (req, res) => {
       userMsgObj.translation = `Gốc (VN): "${userMessage}"`;
     }
 
+    const topicFallback = getTopicFallbackReply(userMessage, topic, session.messages.length);
+
     const aiMsgObj: any = {
       id: `msg_ai_${Date.now()}`,
       sessionId: session.id,
       role: 'assistant',
-      content: '好的！你想继续聊聊吗？',
-      pinyin: 'Hǎo de! Nǐ xiǎng jìxù liáo liao ma?',
-      translation: 'Vâng! Bạn có muốn tiếp tục trò chuyện không?',
+      content: topicFallback.chineseText,
+      pinyin: topicFallback.pinyin,
+      translation: topicFallback.vietnameseTranslation,
       createdAt: new Date().toISOString(),
     };
 
     try {
-      const prompt = `Student said: "${userMessage}". Reply in Chinese appropriate for ${level} level. Return JSON with userFeedback and aiResponse.`;
+      const isVietnamese = !/[\u4e00-\u9fa5]/.test(userMessage);
+      const systemInstruction = `You are an AI Chinese Speaking Tutor for level ${level}. Topic: "${topic}".
+Current student input: "${userMessage}".
+${isVietnamese ? `Student spoke VIETNAMESE. Provide Chinese translation in userFeedback.userMessageChinese & Pinyin in userFeedback.userMessagePinyin.` : `Student spoke CHINESE.`}
+Reply in Chinese asking a natural follow-up question. Keep all feedback under 25 words per field in Vietnamese.`;
+
+      const prompt = `Student said: "${userMessage}". Reply in Chinese.`;
       const result = await generateContentWithModelFallback(prompt, {
+        systemInstruction,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
