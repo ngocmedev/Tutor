@@ -19,6 +19,16 @@ app.use((req, res, next) => {
   next();
 });
 
+// Normalize Vercel Serverless Function URL path (/api/conversation -> /conversation or /api/conversation)
+app.use((req, res, next) => {
+  if (req.url.startsWith('/api/')) {
+    req.url = req.url.replace('/api/', '/');
+  } else if (req.url === '/api') {
+    req.url = '/';
+  }
+  next();
+});
+
 // Helper for dynamic Gemini client
 function getGeminiClient(customApiKey?: string) {
   const apiKey = (customApiKey && customApiKey.trim()) || process.env.GEMINI_API_KEY || '';
@@ -137,9 +147,9 @@ async function generateContentWithModelFallback(prompt: string, config: any, cus
 }
 
 /**
- * POST /api/translate
+ * /translate
  */
-app.post('/api/translate', async (req, res) => {
+app.post('/translate', async (req, res) => {
   try {
     const { text } = req.body;
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
@@ -220,9 +230,9 @@ Return JSON matching schema:
 });
 
 /**
- * POST /api/conversation - Start New Conversation
+ * /conversation - Start New Conversation
  */
-app.post('/api/conversation', async (req, res) => {
+app.post('/conversation', async (req, res) => {
   try {
     const { level = 'HSK 1', topic = 'Self Introduction' } = req.body || {};
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
@@ -313,9 +323,9 @@ app.post('/api/conversation', async (req, res) => {
 });
 
 /**
- * POST /api/conversation/message
+ * /conversation/message
  */
-app.post('/api/conversation/message', async (req, res) => {
+app.post('/conversation/message', async (req, res) => {
   try {
     const { sessionId, userMessage, level = 'HSK 1', topic = 'Self Introduction', recordedAudioUrl } = req.body;
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
@@ -435,4 +445,7 @@ app.post('/api/conversation/message', async (req, res) => {
   }
 });
 
-export default app;
+// Vercel Serverless Function export handler
+export default (req: any, res: any) => {
+  app(req, res);
+};
