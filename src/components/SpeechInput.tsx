@@ -18,10 +18,10 @@ declare global {
   }
 }
 
-// Mobile-compatible MIME type detector for MediaRecorder
+// Safely probe MIME types without throwing exceptions on iOS Safari
 const getSupportedMimeType = (): string => {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
-  const types = [
+  const candidateTypes = [
     'audio/webm;codecs=opus',
     'audio/webm',
     'audio/mp4',
@@ -29,7 +29,7 @@ const getSupportedMimeType = (): string => {
     'audio/ogg',
     'audio/wav',
   ];
-  for (const t of types) {
+  for (const t of candidateTypes) {
     try {
       if (MediaRecorder.isTypeSupported(t)) return t;
     } catch (_) {}
@@ -37,7 +37,7 @@ const getSupportedMimeType = (): string => {
   return '';
 };
 
-// Check MediaDevices support (handles HTTP insecure context on mobile)
+// Check MediaDevices support (handles HTTP vs HTTPS context on mobile)
 const isMediaDevicesSupported = (): boolean => {
   return (
     typeof navigator !== 'undefined' &&
@@ -56,6 +56,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [speechLang, setSpeechLang] = useState<'zh-CN' | 'vi-VN'>(
     defaultLang === 'zh-CN' ? 'zh-CN' : 'vi-VN'
   );
@@ -65,12 +66,34 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
   const recognitionRef = useRef<any>(null);
   const shouldKeepListeningRef = useRef(false);
   const baseTextRef = useRef('');
+  const timerIntervalRef = useRef<number | null>(null);
 
   // Mobile Microphone MediaRecorder state
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
   const recordedAudioUrlRef = useRef<string | undefined>(undefined);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  const formatRecordingTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const startTimer = () => {
+    setRecordingSeconds(0);
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    timerIntervalRef.current = window.setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1);
+    }, 1000);
+  };
+
+  const stopTimer = () => {
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+  };
 
   const getApiKeyHeader = (): Record<string, string> => {
     const customKey = localStorage.getItem('user_gemini_api_key');
@@ -104,12 +127,12 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     try {
       if (!isMediaDevicesSupported()) {
         setMicError(
-          'Không thể truy cập Micro. Trên điện thoại, trình duyệt yêu cầu truy cập qua kết nối HTTPS (hoặc localhost/Vercel) để cấp quyền Micro.'
+          'Không thể kết nối Micro. Trên điện thoại, bạn cần mở trang web qua kết nối HTTPS (hoặc localhost/Vercel) để trình duyệt cấp quyền Micro.'
         );
         return false;
       }
 
-      TextToSpeechService.stop(); // Stop any playing AI voice before opening mic
+      TextToSpeechService.stop(); // Silence AI speech before microphone opens
 
       let stream: MediaStream;
       try {
@@ -121,18 +144,25 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
           },
         });
       } catch (err) {
-        // Fallback for mobile devices rejecting complex audio constraints
+        // Fallback to basic audio constraint for mobile browsers rejecting detailed options
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
 
       mediaStreamRef.current = stream;
       mediaChunksRef.current = [];
 
+      let mediaRecorder: MediaRecorder;
       const mimeType = getSupportedMimeType();
-      const options = mimeType ? { mimeType } : undefined;
-      const mediaRecorder = options
-        ? new MediaRecorder(stream, options)
-        : new MediaRecorder(stream);
+
+      // Robust constructor fallback (iOS Safari throws if unsupported mimeType option passed)
+      try {
+        mediaRecorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
+      } catch (eConstruct) {
+        console.warn('MediaRecorder with mimeType options failed, falling back to default:', eConstruct);
+        mediaRecorder = new MediaRecorder(stream);
+      }
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
@@ -156,15 +186,23 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
-      mediaRecorder.start(250); // 250ms timeslice for mobile stream safety
+      // Robust start fallback
+      try {
+        mediaRecorder.start(100); // 100ms timeslice for mobile safety
+      } catch (_) {
+        mediaRecorder.start();
+      }
+
       mediaRecorderRef.current = mediaRecorder;
+      startTimer();
       return true;
     } catch (e: any) {
       console.warn('MediaRecorder error:', e);
+      stopTimer();
       if (e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError') {
-        setMicError('Quyền truy cập Micro bị từ chối. Vui lòng mở Cài đặt trình duyệt và cấp quyền Microphone.');
+        setMicError('Quyền truy cập Micro bị từ chối. Vui lòng vào Cài đặt trình duyệt và bật quyền Microphone cho trang web.');
       } else if (e?.name === 'NotFoundError') {
-        setMicError('Không tìm thấy thiết bị Microphone trên máy.');
+        setMicError('Không tìm thấy thiết bị Microphone trên thiết bị của bạn.');
       } else {
         setMicError(`Lỗi truy cập Micro: ${e?.message || 'Không thể khởi động Micro'}`);
       }
@@ -173,6 +211,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
   };
 
   const stopMediaRecording = (): Promise<string | undefined> => {
+    stopTimer();
     return new Promise((resolve) => {
       const mediaRecorder = mediaRecorderRef.current;
       if (!mediaRecorder || mediaRecorder.state === 'inactive') {
@@ -188,9 +227,10 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         }
       };
 
+      // 2500ms safety timeout for mobile FileReader conversion
       const timeout = setTimeout(() => {
         safeResolve(recordedAudioUrlRef.current);
-      }, 600);
+      }, 2500);
 
       mediaRecorder.onstop = () => {
         clearTimeout(timeout);
@@ -235,10 +275,10 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
     try {
       const recognition = new SpeechRecognition();
-      const isMobile = typeof navigator !== 'undefined' &&
+      const isMobile =
+        typeof navigator !== 'undefined' &&
         /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-      // On mobile browsers, continuous mode frequently causes speech engine crashes
       recognition.continuous = !isMobile;
       recognition.interimResults = true;
       recognition.lang = speechLang;
@@ -272,13 +312,14 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
       recognition.onerror = (event: any) => {
         console.warn('Speech recognition warning:', event.error);
-        if (event.error === 'not-allowed') {
-          setMicError('Quyền truy cập Micro bị từ chối. Vui lòng cấp quyền Microphone trong trình duyệt.');
+        // CRITICAL FIX: Do NOT set micError if MediaRecorder stream is active!
+        if (event.error === 'not-allowed' && !mediaStreamRef.current) {
+          setMicError('Vui lòng bật quyền Microphone trong trình duyệt.');
         }
       };
 
       recognition.onend = () => {
-        if (shouldKeepListeningRef.current && isMobile) {
+        if (shouldKeepListeningRef.current && isMobile && mediaStreamRef.current) {
           try {
             recognition.start();
           } catch (_) {}
@@ -386,7 +427,7 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
 
     let messageToSend = inputText.trim();
 
-    // If user recorded audio without typed text (e.g. spoken voice on mobile)
+    // If user recorded audio without typed text on mobile
     if (!messageToSend && audioUrlToSend) {
       const transcribed = await transcribeAudioWithAI(audioUrlToSend);
       if (transcribed) {
@@ -442,22 +483,16 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
         </div>
 
         {isListening && (
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 animate-pulse">
+          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-red-600 animate-pulse bg-red-50 px-2.5 py-1 rounded-full border border-red-200">
             <span className="w-2 h-2 rounded-full bg-red-600"></span>
-            Đang thu âm giọng nói...
+            Đang thu âm: {formatRecordingTime(recordingSeconds)}
           </span>
         )}
 
         {isTranscribing && (
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 animate-pulse">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 animate-pulse bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
             AI đang nhận diện chữ...
-          </span>
-        )}
-
-        {!speechSupported && !isTranscribing && (
-          <span className="text-[11px] font-medium text-gray-600 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">
-            AI Speech-to-Text Mode
           </span>
         )}
       </div>
