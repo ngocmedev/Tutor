@@ -1,0 +1,6 @@
+{
+  "name": "AI Chinese Tutor",
+  "description": "AI Chinese Speaking Tutor with Text-to-Speech, Speech-to-Text, Shadowing, HSK Levels, and AI Conversation Practice",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
