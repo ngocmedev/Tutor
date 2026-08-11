@@ -129,13 +129,33 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
     if (response.audioUrl || response.audioBase64) {
       const src = response.audioUrl || response.audioBase64;
-      if (src && !audioRef.current) {
+      if (src) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
         const audio = new Audio(src);
         audioRef.current = audio;
         audio.playbackRate = speed;
         audio.onloadedmetadata = () => {
           setDuration(audio.duration || 3);
         };
+        audio.onended = () => {
+          setIsPlaying(false);
+          setIsLoading(false);
+          stopTimer();
+          setCurrentTime(0);
+        };
+
+        try {
+          await audio.play();
+          setIsPlaying(true);
+          setIsLoading(false);
+          startTimer();
+        } catch (playErr: any) {
+          console.error('Mobile audio play error:', playErr);
+          setIsLoading(false);
+          setIsPlaying(false);
+        }
       }
     } else {
       // Browser TTS fallback length estimation (~ 0.3s per character)

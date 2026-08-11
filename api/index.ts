@@ -173,6 +173,42 @@ async function generateContentWithModelFallback(prompt: string, config: any, cus
 }
 
 /**
+ * /tts - Synthesize Chinese Speech
+ */
+app.post('/tts', async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Text prompt is required.' });
+    }
+
+    const cleanText = text.substring(0, 300);
+    const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(cleanText)}&tl=zh-CN&client=tw-ob`;
+    const ttsRes = await fetch(googleTtsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    if (ttsRes.ok) {
+      const arrayBuffer = await ttsRes.arrayBuffer();
+      const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+      const dataUri = `data:audio/mpeg;base64,${base64Audio}`;
+
+      return res.json({
+        audioBase64: dataUri,
+        providerUsed: 'neural-tts',
+      });
+    }
+
+    return res.status(500).json({ error: 'TTS audio synthesis failed' });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || 'TTS Error' });
+  }
+});
+
+/**
  * /translate
  */
 app.post('/translate', async (req, res) => {
