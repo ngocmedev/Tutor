@@ -175,7 +175,7 @@ async function generateContentWithModelFallback(prompt: string, config: any, cus
 /**
  * /tts - Synthesize Chinese Speech
  */
-app.post('/tts', async (req, res) => {
+app.post(['/tts', '/api/tts'], async (req, res) => {
   try {
     const { text } = req.body;
 
@@ -211,7 +211,7 @@ app.post('/tts', async (req, res) => {
 /**
  * /translate
  */
-app.post('/translate', async (req, res) => {
+app.post(['/translate', '/api/translate'], async (req, res) => {
   try {
     const { text } = req.body;
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
@@ -294,7 +294,7 @@ Return JSON matching schema:
 /**
  * /conversation - Start New Conversation
  */
-app.post('/conversation', async (req, res) => {
+app.post(['/conversation', '/api/conversation'], async (req, res) => {
   try {
     const { level = 'HSK 1', topic = 'Self Introduction' } = req.body || {};
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
@@ -387,7 +387,7 @@ app.post('/conversation', async (req, res) => {
 /**
  * /conversation/message
  */
-app.post('/conversation/message', async (req, res) => {
+app.post(['/conversation/message', '/api/conversation/message'], async (req, res) => {
   try {
     const { sessionId, userMessage, level = 'HSK 1', topic = 'Self Introduction', recordedAudioUrl } = req.body;
     const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
