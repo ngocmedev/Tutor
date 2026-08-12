@@ -427,15 +427,13 @@ app.post(['/stt', '/api/stt'], async (req, res) => {
       return res.status(400).json({ error: 'Empty base64 audio payload' });
     }
 
-    const mimeType = rawMime.includes('webm')
-      ? 'audio/webm'
-      : rawMime.includes('mp4') || rawMime.includes('aac') || rawMime.includes('m4a')
-      ? 'audio/mp4'
-      : rawMime.includes('ogg')
-      ? 'audio/ogg'
-      : rawMime.includes('wav')
-      ? 'audio/wav'
-      : 'audio/mp4';
+    let mimeType = 'audio/mp4';
+    if (rawMime.includes('webm')) mimeType = 'audio/webm';
+    else if (rawMime.includes('wav')) mimeType = 'audio/wav';
+    else if (rawMime.includes('ogg')) mimeType = 'audio/ogg';
+    else if (rawMime.includes('aac')) mimeType = 'audio/aac';
+    else if (rawMime.includes('mp3') || rawMime.includes('mpeg')) mimeType = 'audio/mp3';
+    else if (rawMime.includes('mp4') || rawMime.includes('m4a')) mimeType = 'audio/mp4';
 
     const targetLangName = language.startsWith('zh') ? 'Chinese (Mandarin)' : 'Vietnamese';
     const prompt = `Listen to this speech recording. Transcribe the exact spoken words in ${targetLangName}. Return JSON matching schema:
