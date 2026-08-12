@@ -363,17 +363,12 @@ export const SpeechInput: React.FC<SpeechInputProps> = ({
     shouldKeepListeningRef.current = true;
     setIsListening(true);
 
-    const isMobile = isMobileDevice();
+    // Attempt real-time Web Speech Recognition preview on all supported browsers (Mobile & Desktop)
+    startSpeechRecognition();
 
-    // On Desktop, attempt synchronous SpeechRecognition for real-time preview.
-    // On Mobile, skip SpeechRecognition to prevent concurrent audio device conflicts with MediaRecorder.
-    if (!isMobile) {
-      startSpeechRecognition();
-    }
-
-    // Start MediaRecorder async (works robustly on mobile & desktop)
+    // Start MediaRecorder async for recording audio clip
     startMediaRecording().then((success) => {
-      if (!success) {
+      if (!success && !recognitionRef.current) {
         shouldKeepListeningRef.current = false;
         setIsListening(false);
         stopSpeechRecognition();

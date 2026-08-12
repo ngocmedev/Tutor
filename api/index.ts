@@ -173,6 +173,50 @@ async function generateContentWithModelFallback(prompt: string, config: any, cus
 }
 
 /**
+ * /stt - Speech-To-Text Audio Transcription via Gemini Multimodal AI
+ */
+app.post(['/stt', '/api/stt'], async (req, res) => {
+  try {
+    const { audioUrl, language = 'zh-CN' } = req.body;
+    const userApiKey = (req.headers['x-gemini-api-key'] as string) || undefined;
+
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return res.status(400).json({ error: 'audioUrl is required' });
+    }
+
+    const matches = audioUrl.match(/^data:(audio\/[a-zA-Z0-9-+.]+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ error: 'Invalid audio Data URI format' });
+    }
+
+    const mimeType = matches[1];
+    const base64Data = matches[2];
+
+    const aiClient = getGeminiClient(userApiKey);
+    const targetLangName = language === 'zh-CN' ? 'Chinese Hanzi' : 'Vietnamese';
+
+    const response = await aiClient.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data: base64Data,
+          },
+        },
+        `Listen to this audio carefully and transcribe the spoken words accurately in ${targetLangName}. Return ONLY the plain text transcription without quotes or explanations.`,
+      ],
+    });
+
+    const transcribedText = response?.text ? response.text.trim().replace(/^["']|["']$/g, '') : '';
+    return res.json({ text: transcribedText });
+  } catch (error: any) {
+    console.error('STT Transcription Error:', error);
+    return res.status(500).json({ error: error?.message || 'STT error' });
+  }
+});
+
+/**
  * /tts - Synthesize Chinese Speech
  */
 app.post(['/tts', '/api/tts'], async (req, res) => {
